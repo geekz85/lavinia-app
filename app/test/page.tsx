@@ -3,6 +3,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { makeMasterDecision } from '@/lib/core/master-control';
 import { fetchAvailability } from '@/lib/data/fetch-availability';
+import { fetchAppleAvailability } from '@/lib/data/apple';
+import { registerPush } from '@/lib/push/register';
 
 export default function TestPage() {
   const [decision, setDecision] = useState<any>(null);
@@ -22,12 +24,6 @@ export default function TestPage() {
   const [history, setHistory] = useState<number[]>([]);
   const lastCheckRef = useRef<number>(Date.now());
 
-  const requestNotificationPermission = async () => {
-    if (typeof window !== 'undefined' && 'Notification' in window) {
-      const permission = await Notification.requestPermission();
-      alert('Notification Permission: ' + permission);
-    }
-  };
 
   useEffect(() => {
     // 🔐 Load user preferences from localStorage
@@ -41,11 +37,21 @@ export default function TestPage() {
     let interval: any;
 
     const load = async () => {
-      // 🌐 Fetch (simulated) live data
-      const data = await fetchAvailability();
+      // 🌐 Fetch Apple live data
+      const stores = await fetchAppleAvailability();
+
+      const nearbyStores = stores.map((s: any) => ({
+        storeId: s.storeName,
+        distanceKm: 0,
+        quantity: s.partsAvailability?.[0]?.pickupSearchQuote || 0,
+        status: s.partsAvailability?.[0]?.pickupDisplay || 'unavailable',
+      }));
 
       const mockContext = {
-        availability: data.availability,
+        availability: {
+          nearbyStores,
+          status: nearbyStores.length > 0 ? 'in_stock' : 'out_of_stock',
+        },
         pricing: {
           currentPrice: 1199,
           avgPrice30d: 1299,
@@ -54,8 +60,10 @@ export default function TestPage() {
         prediction: {
           confidence: 0.9
         },
-        signals: data.signals,
-        // meta optional – Launch wird automatisch erkannt
+        signals: {
+          movementScore: 50,
+          flapScore: 50
+        },
         userPreferences: userPrefs
       };
 
@@ -162,7 +170,7 @@ export default function TestPage() {
       lineHeight: 1.4
     }}>
       <button
-        onClick={requestNotificationPermission}
+        onClick={registerPush}
         style={{
           marginBottom: 15,
           padding: 10,
