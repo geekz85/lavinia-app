@@ -1,3 +1,5 @@
+'use client';
+
 // 🔑 SKU Mapping (Model + Storage + Color → Apple Part Number)
 const SKU_MAP: Record<string, string> = {
   // iPhone 17 Pro
@@ -114,7 +116,6 @@ const STORE_COORDS: Record<string, { lat: number; lon: number }> = {
   'Duesseldorf': { lat: 51.2277, lon: 6.7735 },
   'Bonn': { lat: 50.7374, lon: 7.0982 },
 };
-'use client';
 
 import { useEffect, useState, useRef } from 'react';
 import { makeMasterDecision } from '@/lib/core/master-control';
