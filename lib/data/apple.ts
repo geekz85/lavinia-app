@@ -1,4 +1,25 @@
-export async function fetchAppleAvailability(zip = '50667') {
+type AppleFetchOptions = {
+  zip?: string;
+  model?: string;
+  models?: string[];
+};
+
+// Helper: default models (fallback)
+const DEFAULT_MODELS = [
+  'MTV03ZD/A', // iPhone 256GB Titan
+];
+
+export async function fetchAppleAvailability(options: AppleFetchOptions = {}) {
+  const zip = options.zip || '50667';
+
+  // allow single model OR multiple
+  const parts =
+    options.models && options.models.length > 0
+      ? options.models
+      : options.model
+      ? [options.model]
+      : DEFAULT_MODELS;
+
   try {
     const res = await fetch(
       'https://www.apple.com/de/shop/fulfillment-messages',
@@ -8,9 +29,7 @@ export async function fetchAppleAvailability(zip = '50667') {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          parts: [
-            'MU7D3ZD/A', // Beispiel iPhone Modell (später dynamisch)
-          ],
+          parts,
           location: zip,
         }),
       }
@@ -18,9 +37,19 @@ export async function fetchAppleAvailability(zip = '50667') {
 
     const data = await res.json();
 
-    return data?.body?.content?.pickupMessage?.stores || [];
+    return {
+      stores: data?.body?.content?.pickupMessage?.stores || [],
+      parts,
+      zip,
+      raw: data,
+    };
   } catch (err) {
     console.error('Apple fetch error:', err);
-    return [];
+    return {
+      stores: [],
+      parts,
+      zip,
+      error: true,
+    };
   }
 }

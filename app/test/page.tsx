@@ -1,3 +1,21 @@
+// 🔑 SKU Mapping (Model + Storage + Color → Apple Part Number)
+const SKU_MAP: Record<string, string> = {
+  // iPhone 16 Pro examples (placeholders – extend as needed)
+  'iPhone 16 Pro_256GB_Titan': 'MTV03ZD/A',
+  'iPhone 16 Pro_512GB_Titan': 'MTV13ZD/A',
+  'iPhone 16 Pro_1TB_Titan': 'MTV23ZD/A',
+
+  // iPhone 15 Pro (fallback)
+  'iPhone 15 Pro_256GB_Titan': 'MTV03ZD/A',
+};
+
+function getSkuFromPrefs(prefs: any): string | null {
+  const model = prefs?.variant?.model;
+  const storage = prefs?.variant?.storage;
+  const color = prefs?.variant?.color;
+  const key = `${model}_${storage}_${color}`;
+  return SKU_MAP[key] || null;
+}
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
@@ -37,8 +55,16 @@ export default function TestPage() {
     let interval: any;
 
     const load = async () => {
-      // 🌐 Fetch Apple live data
-      const stores = await fetchAppleAvailability();
+      // 🌐 Build SKU from user preferences
+      const sku = getSkuFromPrefs(userPrefs);
+
+      // 🌐 Fetch Apple live data with SKU (fallback handled inside fetch)
+      const data = await fetchAppleAvailability({
+        zip: '50667',
+        model: sku || undefined,
+      });
+
+      const stores = data.stores || [];
 
       const nearbyStores = stores.map((s: any) => ({
         storeId: s.storeName,
@@ -244,25 +270,48 @@ export default function TestPage() {
         </label>
 
         <label style={{ display: 'block', marginTop: 10 }}>
-          Speicher:
+          Modell:
           <select
-            value={userPrefs.variant.storage}
+            value={userPrefs.variant.model}
             onChange={(e) => {
               const updated = {
                 ...userPrefs,
-                variant: { ...userPrefs.variant, storage: e.target.value }
+                variant: { ...userPrefs.variant, model: e.target.value }
               };
               setUserPrefs(updated);
               localStorage.setItem('lavinia_user_prefs', JSON.stringify(updated));
             }}
             style={{ marginLeft: 10 }}
           >
-            <option>128GB</option>
-            <option>256GB</option>
-            <option>512GB</option>
-            <option>1TB</option>
+            <option value="iPhone 16">iPhone 16</option>
+            <option value="iPhone 16 Plus">iPhone 16 Plus</option>
+            <option value="iPhone 16 Pro">iPhone 16 Pro</option>
+            <option value="iPhone 16 Pro Max">iPhone 16 Pro Max</option>
+            <option value="iPhone 15 Pro">iPhone 15 Pro</option>
+            <option value="iPhone 15 Pro Max">iPhone 15 Pro Max</option>
           </select>
         </label>
+
+        <label style={{ display: 'block', marginTop: 10 }}>
+  Speicher:
+  <select
+    value={userPrefs.variant.storage}
+    onChange={(e) => {
+      const updated = {
+        ...userPrefs,
+        variant: { ...userPrefs.variant, storage: e.target.value }
+      };
+      setUserPrefs(updated);
+      localStorage.setItem('lavinia_user_prefs', JSON.stringify(updated));
+    }}
+    style={{ marginLeft: 10 }}
+  >
+    <option value="128GB">128GB</option>
+    <option value="256GB">256GB</option>
+    <option value="512GB">512GB</option>
+    <option value="1TB">1TB</option>
+  </select>
+</label>
 
         <label style={{ display: 'block', marginTop: 10 }}>
           Farbe:
