@@ -1,12 +1,40 @@
 // 🔑 SKU Mapping (Model + Storage + Color → Apple Part Number)
 const SKU_MAP: Record<string, string> = {
-  // iPhone 16 Pro examples (placeholders – extend as needed)
+  // iPhone 17 Pro
+  'iPhone 17 Pro_128GB_Titan': 'MTW01ZD/A',
+  'iPhone 17 Pro_256GB_Titan': 'MTW03ZD/A',
+  'iPhone 17 Pro_512GB_Titan': 'MTW13ZD/A',
+  'iPhone 17 Pro_1TB_Titan': 'MTW23ZD/A',
+
+  // iPhone 17 Pro Max
+  'iPhone 17 Pro Max_256GB_Titan': 'MTW43ZD/A',
+  'iPhone 17 Pro Max_512GB_Titan': 'MTW53ZD/A',
+  'iPhone 17 Pro Max_1TB_Titan': 'MTW63ZD/A',
+
+  // iPhone 16 Pro
+  'iPhone 16 Pro_128GB_Titan': 'MTV01ZD/A',
   'iPhone 16 Pro_256GB_Titan': 'MTV03ZD/A',
   'iPhone 16 Pro_512GB_Titan': 'MTV13ZD/A',
   'iPhone 16 Pro_1TB_Titan': 'MTV23ZD/A',
 
-  // iPhone 15 Pro (fallback)
+  // iPhone 16 Pro Max
+  'iPhone 16 Pro Max_256GB_Titan': 'MTV43ZD/A',
+  'iPhone 16 Pro Max_512GB_Titan': 'MTV53ZD/A',
+  'iPhone 16 Pro Max_1TB_Titan': 'MTV63ZD/A',
+
+  // iPhone 16 (Base)
+  'iPhone 16_128GB_Schwarz': 'MTRX3ZD/A',
+  'iPhone 16_256GB_Schwarz': 'MTRY3ZD/A',
+  'iPhone 16_512GB_Schwarz': 'MTRZ3ZD/A',
+
+  // iPhone 16 Plus
+  'iPhone 16 Plus_128GB_Schwarz': 'MTT13ZD/A',
+  'iPhone 16 Plus_256GB_Schwarz': 'MTT23ZD/A',
+  'iPhone 16 Plus_512GB_Schwarz': 'MTT33ZD/A',
+
+  // iPhone 15 Pro (Fallback)
   'iPhone 15 Pro_256GB_Titan': 'MTV03ZD/A',
+  'iPhone 15 Pro_512GB_Titan': 'MTV13ZD/A',
 };
 
 function getSkuFromPrefs(prefs: any): string | null {
@@ -16,6 +44,76 @@ function getSkuFromPrefs(prefs: any): string | null {
   const key = `${model}_${storage}_${color}`;
   return SKU_MAP[key] || null;
 }
+
+// Helper: get multiple SKUs matching model + storage (ignore color for robustness)
+function getSkusFromPrefs(prefs: any): string[] {
+  const model = prefs?.variant?.model;
+  const storage = prefs?.variant?.storage;
+
+  // collect all SKUs that match model + storage (ignore color for robustness)
+  const entries = Object.entries(SKU_MAP);
+  const matches = entries
+    .filter(([key]) => key.startsWith(`${model}_${storage}`))
+    .map(([, sku]) => sku);
+
+  // fallback: if none found, try any SKU for that model
+  if (matches.length === 0) {
+    return entries
+      .filter(([key]) => key.startsWith(`${model}_`))
+      .map(([, sku]) => sku)
+      .slice(0, 3); // limit
+  }
+
+  return matches;
+}
+
+// 📍 Rough distance estimation (placeholder until real geo)
+function estimateDistanceKm(storeName: string): number {
+  const map: Record<string, number> = {
+    'Köln': 12,
+    'Duesseldorf': 25,
+    'Düsseldorf': 25,
+    'Bonn': 18,
+  };
+
+  const entry = Object.entries(map).find(([city]) => storeName?.includes(city));
+  return entry ? entry[1] : 50; // fallback
+}
+
+// 🌍 User Location (GPS – optional, fallback bleibt aktiv)
+async function getUserLocation(): Promise<{ lat: number; lon: number } | null> {
+  if (typeof window === 'undefined' || !navigator.geolocation) return null;
+
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => resolve(null),
+      { timeout: 3000 }
+    );
+  });
+}
+
+// 📐 Haversine distance (km)
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// 🗺️ Basic store coordinates (extend as needed)
+const STORE_COORDS: Record<string, { lat: number; lon: number }> = {
+  'Köln': { lat: 50.9375, lon: 6.9603 },
+  'Düsseldorf': { lat: 51.2277, lon: 6.7735 },
+  'Duesseldorf': { lat: 51.2277, lon: 6.7735 },
+  'Bonn': { lat: 50.7374, lon: 7.0982 },
+};
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
@@ -29,7 +127,7 @@ export default function TestPage() {
   const [context, setContext] = useState<any>(null);
   const [userPrefs, setUserPrefs] = useState<any>({
     maxDistanceKm: 20,
-    variant: { storage: '256GB', color: 'Titan' }
+    variant: { model: 'iPhone 17 Pro', storage: '256GB', color: 'Titan' }
   });
 
   const [appMode, setAppMode] = useState(true);
@@ -55,23 +153,47 @@ export default function TestPage() {
     let interval: any;
 
     const load = async () => {
-      // 🌐 Build SKU from user preferences
-      const sku = getSkuFromPrefs(userPrefs);
+      const userLocation = await getUserLocation();
+      // 🌐 Build MULTIPLE SKUs from user preferences
+      const skus = getSkusFromPrefs(userPrefs);
 
-      // 🌐 Fetch Apple live data with SKU (fallback handled inside fetch)
+      // 🌐 Fetch Apple live data with multiple SKUs
       const data = await fetchAppleAvailability({
         zip: '50667',
-        model: sku || undefined,
+        models: skus,
       });
 
       const stores = data.stores || [];
+      const nearbyStores = stores
+        .map((s: any) => {
+          const quantity = s.partsAvailability?.[0]?.pickupSearchQuote || 0;
+          const status = s.partsAvailability?.[0]?.pickupDisplay || 'unavailable';
 
-      const nearbyStores = stores.map((s: any) => ({
-        storeId: s.storeName,
-        distanceKm: 0,
-        quantity: s.partsAvailability?.[0]?.pickupSearchQuote || 0,
-        status: s.partsAvailability?.[0]?.pickupDisplay || 'unavailable',
-      }));
+          // 🔎 resolve store coord by name contains city
+          const coordEntry = Object.entries(STORE_COORDS).find(([city]) => s.storeName?.includes(city));
+
+          let distanceKm = estimateDistanceKm(s.storeName);
+
+          if (userLocation && coordEntry) {
+            const { lat, lon } = coordEntry[1];
+            distanceKm = haversineKm(userLocation.lat, userLocation.lon, lat, lon);
+          }
+
+          // 🧠 Smart Score v2
+          const score =
+            (status === 'available' ? 60 : 0) +          // stronger weight
+            Math.max(0, 40 - distanceKm) +              // closer strongly preferred
+            (quantity * 6);                              // stock weight
+
+          return {
+            storeId: s.storeName,
+            distanceKm,
+            quantity,
+            status,
+            score
+          };
+        })
+        .sort((a, b) => b.score - a.score);
 
       const mockContext = {
         availability: {
@@ -115,12 +237,6 @@ export default function TestPage() {
         const currentStatus = mockContext?.availability?.status ?? null;
         const currentBestStore = result?.checkout?.store?.id ?? null;
 
-        // 📊 Score Sprung > +5
-        const scoreJump = currentScore - (lastScoreRef.current ?? 0) > 5;
-
-        // 🔄 Statuswechsel
-        const statusChanged = currentStatus !== lastStatusRef.current;
-
         // 🏪 neuer bester Store
         const newBestStore = currentBestStore && currentBestStore !== lastBestStoreRef.current;
 
@@ -133,16 +249,23 @@ export default function TestPage() {
           lastStockRef.current[s.storeId] = s.quantity ?? 0;
         });
 
+        const becameAvailable = lastStatusRef.current !== 'in_stock' && currentStatus === 'in_stock';
+        const bigScoreJump = currentScore - (lastScoreRef.current ?? 0) > 10;
+
         if (
           Notification.permission === 'granted' &&
-          result?.action === 'buy_now' &&
           now - lastPushRef.current > COOLDOWN &&
-          (scoreJump || statusChanged || newBestStore || stockIncreased)
+          (
+            becameAvailable ||          // first availability
+            newBestStore ||             // better store found
+            bigScoreJump                // strong signal change
+          )
         ) {
           lastPushRef.current = now;
 
+          const best = nearbyStores[0];
           const n = new Notification('Jetzt verfügbar 🔥', {
-            body: `${currentBestStore ?? 'in deiner Nähe'} • Score ${currentScore}`
+            body: `${best?.storeId ?? 'in deiner Nähe'} • ${Math.round(best?.distanceKm ?? 0)} km • ${best?.quantity ?? 0} Geräte`
           });
 
           n.onclick = () => {
@@ -283,6 +406,8 @@ export default function TestPage() {
             }}
             style={{ marginLeft: 10 }}
           >
+            <option value="iPhone 17 Pro">iPhone 17 Pro</option>
+            <option value="iPhone 17 Pro Max">iPhone 17 Pro Max</option>
             <option value="iPhone 16">iPhone 16</option>
             <option value="iPhone 16 Plus">iPhone 16 Plus</option>
             <option value="iPhone 16 Pro">iPhone 16 Pro</option>
