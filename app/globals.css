@@ -24,3 +24,32 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@keyframes splashPulse {
+  0% { opacity: 0; transform: scale(0.9); }
+  40% { opacity: 1; transform: scale(1.05); }
+  70% { transform: scale(1); }
+  100% { opacity: 0; }
+}
+
+.animate-splash {
+  animation: splashPulse 1.8s ease-out forwards;
+}
+
+/* UI polish */
+body {
+  background: #0F1115;
+  color: white;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* iOS safe area */
+body {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
