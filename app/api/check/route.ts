@@ -1,3 +1,9 @@
-export default function handler(req, res) {
-  res.status(200).json({ status: "ok-pages" });
+import { runLaviniaEngine } from '@/lib/engine/lavinia';
+
+export async function GET() {
+  const result = await runLaviniaEngine({
+    test: true
+  });
+
+  return Response.json(result);
 }
