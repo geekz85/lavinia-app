@@ -1,10 +1,13 @@
 'use client';
 
-// Helper: random human-like delay (ms)
-function randomDelay(min = 800, max = 2500) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
+import {
+  randomDelay,
+  getDomainProfile,
+  startCheckoutSniper,
+  buildAppleDeepLink,
+  haversineKm,
+  detectGlobalDrop
+} from '@/lib/engine/lavinia';
 
 function isAppleLink(url: string) {
   return url.includes('apple.com');
@@ -12,152 +15,6 @@ function isAppleLink(url: string) {
 
 // 🔧 Global fallback (fix for build – real ref is inside component)
 const storePriorityRef: { current: Record<string, number> } = { current: {} };
-
-// 🌐 Smart Domain Profiles v2
-function getDomainProfile(url: string) {
-  const domainStats = storePriorityRef.current || {};
-
-  if (url.includes('apple.com')) {
-    return { name: 'apple', sniper: false, aggressiveness: 'safe' };
-  }
-
-  if (url.includes('amazon')) {
-    const score = domainStats['amazon'] || 0;
-
-    let aggressiveness = 'medium';
-
-    if (score > 30) aggressiveness = 'aggressive';
-    else if (score < 5) aggressiveness = 'low';
-
-    return {
-      name: 'amazon',
-      sniper: true,
-      aggressiveness
-    };
-  }
-
-  if (url.includes('mediamarkt') || url.includes('saturn')) {
-    return { name: 'retail', sniper: true, aggressiveness: 'medium' };
-  }
-
-  return { name: 'default', sniper: true, aggressiveness: 'normal' };
-}
-
-// 🏹 Checkout Sniper Mode: Auto-clicks checkout/buy buttons in DOM (best effort)
-function startCheckoutSniper() {
-  const CLICK_TEXTS = ['in den warenkorb', 'kaufen', 'add to bag', 'buy'];
-
-  // --- Queue detection helper ---
-  const detectQueue = () => {
-    const text = document.body.innerText.toLowerCase();
-
-    if (
-      text.includes('warteschlange') ||
-      text.includes('queue') ||
-      text.includes('bitte warten') ||
-      text.includes('you are in line') ||
-      text.includes('high demand')
-    ) {
-      console.log('⏳ Queue erkannt');
-      return 'queue';
-    }
-
-    if (
-      text.includes('nicht verfügbar') ||
-      text.includes('currently unavailable') ||
-      text.includes('out of stock')
-    ) {
-      console.log('❌ Kein Stock');
-      return 'no_stock';
-    }
-
-    return 'ok';
-  };
-
-  const tryClick = () => {
-    // 🔍 Check queue first
-    const queueState = detectQueue();
-    if (queueState === 'queue') {
-      return false;
-    }
-
-    const elements = Array.from(document.querySelectorAll('button, a')) as HTMLElement[];
-
-    const target = elements.find(el => {
-      const text = el.innerText?.toLowerCase() || '';
-      return CLICK_TEXTS.some(t => text.includes(t));
-    });
-
-    if (target) {
-      console.log('🎯 Ultra Sniper: Button gefunden → klick');
-
-      // 🧠 Human-like delay before click
-      setTimeout(() => {
-        target.click();
-      }, randomDelay(100, 400));
-
-      return true;
-    }
-
-    return false;
-  };
-
-  // 🚀 Instant check first
-  if (tryClick()) return;
-
-  // 👀 Observe DOM changes (react instantly)
-  const observer = new MutationObserver(() => {
-    const success = tryClick();
-    if (success) {
-      observer.disconnect();
-    }
-  });
-
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
-
-  // ⏱ fallback interval (safety)
-  let attempts = 0;
-  const interval = setInterval(() => {
-    attempts++;
-
-    const state = detectQueue();
-
-    // 🧠 Queue Breaker Logic
-    if (state === 'queue') {
-      const delay = randomDelay(2000, 5000);
-
-      if (attempts % 5 === 0) {
-        console.log('🔄 Smart refresh (queue)');
-        setTimeout(() => location.reload(), delay);
-      }
-
-      if (attempts % 9 === 0) {
-        console.log('⏳ Human wait (queue)');
-        return;
-      }
-    }
-
-    if (state === 'no_stock') {
-      // faster retry when no stock
-      if (attempts % 3 === 0) {
-        console.log('⚡ Fast retry (no stock)');
-        location.reload();
-      }
-    }
-
-    if (document.visibilityState !== 'visible') return;
-
-    const success = tryClick();
-
-    if (success || attempts > 80) {
-      clearInterval(interval);
-      observer.disconnect();
-    }
-  }, 300);
-}
 
 // 🔑 SKU Mapping (Model + Storage + Color → Apple Part Number)
 const SKU_MAP: Record<string, string> = {
@@ -276,15 +133,6 @@ const STORE_COORDS: Record<string, { lat: number; lon: number }> = {
   'Bonn': { lat: 50.7374, lon: 7.0982 },
 };
 
-// 🔗 Build Apple deep link (simplified)
-function buildAppleDeepLink(storeId: string, sku: string) {
-
-  // NOTE: Apple URLs can change; this is a pragmatic deep link to product + pickup context
-  const base = 'https://www.apple.com/de/shop/buy-iphone';
-  // we pass sku and a hint of store (best effort)
-  return `${base}?part=${encodeURIComponent(sku)}&purchaseOption=fullPrice&pickup=true`;
-}
-
 import { useEffect, useState, useRef } from 'react';
 // 📦 Apple DB Loader
 async function getSkusFromDB(prefs: any): Promise<string[]> {
@@ -361,18 +209,6 @@ export default function TestPage() {
   const openTabsRef = useRef<number>(0);
   const tabPoolRef = useRef<Window[]>([]);
   const sessionPoolRef = useRef<number>(0);
-
-  // 🧠 Auto-Detection Engine (multi-shop ready)
-  const detectGlobalDrop = (stores: any[]) => {
-    let signals = 0;
-
-    stores.forEach((s: any) => {
-      if (s.quantity > 0) signals += 2;
-      if (s.score > 80) signals += 1;
-    });
-
-    return signals >= 3; // threshold
-  };
 
   // 🐦 X Signal Detection (placeholder for real API later)
   const detectXSignal = async () => {

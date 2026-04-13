@@ -1,8 +1,12 @@
+import { NextResponse } from 'next/server';
+
 export const dynamic = 'force-dynamic';
+export const runtime = 'edge';
 
 export async function GET() {
-  return Response.json({
-    status: 'ok',
-    message: 'API is working'
+  return NextResponse.json({
+    ok: true,
+    route: '/api/check',
+    timestamp: Date.now()
   });
 }
