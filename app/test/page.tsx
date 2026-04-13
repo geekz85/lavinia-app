@@ -1,5 +1,130 @@
 'use client';
 
+// Helper: random human-like delay (ms)
+function randomDelay(min = 800, max = 2500) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function isAppleLink(url: string) {
+  return url.includes('apple.com');
+}
+
+// 🏹 Checkout Sniper Mode: Auto-clicks checkout/buy buttons in DOM (best effort)
+function startCheckoutSniper() {
+  const CLICK_TEXTS = ['in den warenkorb', 'kaufen', 'add to bag', 'buy'];
+
+  // --- Queue detection helper ---
+  const detectQueue = () => {
+    const text = document.body.innerText.toLowerCase();
+
+    if (
+      text.includes('warteschlange') ||
+      text.includes('queue') ||
+      text.includes('bitte warten') ||
+      text.includes('you are in line') ||
+      text.includes('high demand')
+    ) {
+      console.log('⏳ Queue erkannt');
+      return 'queue';
+    }
+
+    if (
+      text.includes('nicht verfügbar') ||
+      text.includes('currently unavailable') ||
+      text.includes('out of stock')
+    ) {
+      console.log('❌ Kein Stock');
+      return 'no_stock';
+    }
+
+    return 'ok';
+  };
+
+  const tryClick = () => {
+    // 🔍 Check queue first
+    const queueState = detectQueue();
+    if (queueState === 'queue') {
+      return false;
+    }
+
+    const elements = Array.from(document.querySelectorAll('button, a')) as HTMLElement[];
+
+    const target = elements.find(el => {
+      const text = el.innerText?.toLowerCase() || '';
+      return CLICK_TEXTS.some(t => text.includes(t));
+    });
+
+    if (target) {
+      console.log('🎯 Ultra Sniper: Button gefunden → klick');
+
+      // 🧠 Human-like delay before click
+      setTimeout(() => {
+        target.click();
+      }, randomDelay(100, 400));
+
+      return true;
+    }
+
+    return false;
+  };
+
+  // 🚀 Instant check first
+  if (tryClick()) return;
+
+  // 👀 Observe DOM changes (react instantly)
+  const observer = new MutationObserver(() => {
+    const success = tryClick();
+    if (success) {
+      observer.disconnect();
+    }
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  // ⏱ fallback interval (safety)
+  let attempts = 0;
+  const interval = setInterval(() => {
+    attempts++;
+
+    const state = detectQueue();
+
+    // 🧠 Queue Breaker Logic
+    if (state === 'queue') {
+      // smarter refresh pattern
+      if (attempts % 6 === 0) {
+        console.log('🔄 Soft refresh (queue)');
+        location.reload();
+      }
+
+      // occasionally wait longer (human-like)
+      if (attempts % 10 === 0) {
+        console.log('⏳ Pause wegen Queue');
+        return;
+      }
+    }
+
+    if (state === 'no_stock') {
+      // faster retry when no stock
+      if (attempts % 3 === 0) {
+        console.log('⚡ Fast retry (no stock)');
+        location.reload();
+      }
+    }
+
+    if (document.visibilityState !== 'visible') return;
+
+    const success = tryClick();
+
+    if (success || attempts > 80) {
+      clearInterval(interval);
+      observer.disconnect();
+    }
+  }, 300);
+}
+
 // 🔑 SKU Mapping (Model + Storage + Color → Apple Part Number)
 const SKU_MAP: Record<string, string> = {
   // iPhone 17 Pro
@@ -117,7 +242,40 @@ const STORE_COORDS: Record<string, { lat: number; lon: number }> = {
   'Bonn': { lat: 50.7374, lon: 7.0982 },
 };
 
+// 🔗 Build Apple deep link (simplified)
+function buildAppleDeepLink(storeId: string, sku: string) {
+
+  // NOTE: Apple URLs can change; this is a pragmatic deep link to product + pickup context
+  const base = 'https://www.apple.com/de/shop/buy-iphone';
+  // we pass sku and a hint of store (best effort)
+  return `${base}?part=${encodeURIComponent(sku)}&purchaseOption=fullPrice&pickup=true`;
+}
+
 import { useEffect, useState, useRef } from 'react';
+// 📦 Apple DB Loader
+async function getSkusFromDB(prefs: any): Promise<string[]> {
+  try {
+    const res = await fetch('/data/apple-products.json');
+    const data = await res.json();
+
+    const model = prefs?.variant?.model;
+    const storage = prefs?.variant?.storage;
+
+    const devices = data.iPhone || [];
+    const device = devices.find((d: any) => d.model === model);
+
+    if (!device) return [];
+
+    const matches = device.variants
+      .filter((v: any) => v.storage === storage)
+      .map((v: any) => v.sku);
+
+    return matches.length ? matches : device.variants.map((v: any) => v.sku);
+  } catch (e) {
+    console.log('❌ DB Fehler', e);
+    return [];
+  }
+}
 import { makeMasterDecision } from '@/lib/core/master-control';
 import { fetchAvailability } from '@/lib/data/fetch-availability';
 import { fetchAppleAvailability } from '@/lib/data/apple';
@@ -132,6 +290,7 @@ export default function TestPage() {
   });
 
   const [appMode, setAppMode] = useState(true);
+  const [autoBuyAggressive, setAutoBuyAggressive] = useState(false);
 
   const lastPushRef = useRef<number>(0);
   const lastScoreRef = useRef<number>(0);
@@ -139,7 +298,18 @@ export default function TestPage() {
   const lastStockRef = useRef<Record<string, number>>({});
   const lastBestStoreRef = useRef<string | null>(null);
   const [history, setHistory] = useState<number[]>([]);
+  const [trend, setTrend] = useState<number>(0);
+  const historyRef = useRef<number[]>([]);
   const lastCheckRef = useRef<number>(Date.now());
+  const storeStatsRef = useRef<Record<string, { hits: number; success: number }>>({});  
+  const storePriorityRef = useRef<Record<string, number>>({});
+  const timeStatsRef = useRef<Record<number, number>>({});
+  const sequenceRef = useRef<string[]>([]);
+  const preAlertRef = useRef<number>(0);
+  const lastAutoBuyRef = useRef<number>(0);
+  const openTabsRef = useRef<number>(0);
+  const tabPoolRef = useRef<Window[]>([]);
+  const sessionPoolRef = useRef<number>(0);
 
 
   useEffect(() => {
@@ -150,13 +320,28 @@ export default function TestPage() {
         setUserPrefs(JSON.parse(stored));
       } catch {}
     }
+// 🧠 Load AI memory (persistent learning)
+const storedStats = typeof window !== 'undefined'
+  ? localStorage.getItem('lavinia_ai_stats')
+  : null;
 
-    let interval: any;
+if (storedStats) {
+  try {
+    const parsed = JSON.parse(storedStats);
+    storeStatsRef.current = parsed.storeStats || {};
+    timeStatsRef.current = parsed.timeStats || {};
+    storePriorityRef.current = parsed.storePriority || {};
+  } catch {}
+}
+    let interval: NodeJS.Timeout;
 
     const load = async () => {
       const userLocation = await getUserLocation();
       // 🌐 Build MULTIPLE SKUs from user preferences
-      const skus = getSkusFromPrefs(userPrefs);
+      const skus = await getSkusFromDB(userPrefs);
+
+      // 🎯 choose primary SKU for deep link
+      const primarySku = skus?.[0] || null;
 
       // 🌐 Fetch Apple live data with multiple SKUs
       const data = await fetchAppleAvailability({
@@ -180,26 +365,334 @@ export default function TestPage() {
             distanceKm = haversineKm(userLocation.lat, userLocation.lon, lat, lon);
           }
 
-          // 🧠 Smart Score v2
+          // 🧠 Smart Score v3
+          // --- Adaptive Store Learning: new scoring ---
+          const stats = storeStatsRef.current[s.storeId || s.storeName] || { hits: 0, success: 0 };
+          const learnedBoost =
+            Math.min(stats.hits * 2, 20) +
+            Math.min(stats.success * 5, 30);
           const score =
-            (status === 'available' ? 60 : 0) +          // stronger weight
-            Math.max(0, 40 - distanceKm) +              // closer strongly preferred
-            (quantity * 6);                              // stock weight
+            (status === 'available' ? 70 : 0) +
+            Math.max(0, 50 - Math.pow(distanceKm, 1.3)) +
+            Math.min(quantity * 8, 40) +
+            (distanceKm < 5 ? 20 : 0) +
+            learnedBoost; // learning boost
+// 🧠 Store Priority AI boost
+const priority = storePriorityRef.current[s.storeId || s.storeName] || 0;
+          // 🔮 Prediction Signal (v1)
+          const predictionBoost =
+            score > 80 ? 10 :
+            score > 70 ? 5 :
+            0;
+
+          // 🔮 Time-based Prediction (v2)
+          const currentHour = new Date().getHours();
+          const hourHits = timeStatsRef.current[currentHour] || 0;
+          const timeBoost = Math.min(hourHits * 2, 15);
+
+          // 🔮 Sequence Prediction (v3)
+          const lastStore = sequenceRef.current[sequenceRef.current.length - 1];
+          
+
+          let sequenceBoost = 0;
+          if (lastStore && s.storeId === lastStore) {
+            sequenceBoost = 10;
+          }
 
           return {
-            storeId: s.storeName,
+            storeId: s.storeId || s.storeName,
             distanceKm,
             quantity,
             status,
-            score
+            score: score + predictionBoost + timeBoost + sequenceBoost + Math.min(priority * 3, 25),
+            predictionBoost,
+            timeBoost,
+            sequenceBoost
           };
         })
+        .filter((s: any) => s.distanceKm <= userPrefs.maxDistanceKm)
         .sort((a, b) => b.score - a.score);
+
+      // 🧠 Learning: track store success
+      nearbyStores.forEach((s: any) => {
+        if (!storeStatsRef.current[s.storeId]) {
+          storeStatsRef.current[s.storeId] = { hits: 0, success: 0 };
+        }
+
+        if (s.status === 'available') {
+          storeStatsRef.current[s.storeId].hits += 1;
+
+          if (s.distanceKm < 15 && s.quantity > 0) {
+            storeStatsRef.current[s.storeId].success += 1;
+          }
+        }
+      });
+// 🧠 Update Store Priority (Top Stores lernen)
+nearbyStores.slice(0, 3).forEach((s: any, index: number) => {
+  const key = s.storeId || s.storeName;
+
+  if (!storePriorityRef.current[key]) {
+    storePriorityRef.current[key] = 0;
+  }
+
+  // Top Store bekommt mehr Gewicht
+  storePriorityRef.current[key] += (3 - index);
+});
+      // 🕒 Learning: track drop times (hour of day)
+      const hour = new Date().getHours();
+      if (!timeStatsRef.current[hour]) timeStatsRef.current[hour] = 0;
+      // count only meaningful signals (availability or high score)
+      if (nearbyStores[0]?.status === 'available' || (nearbyStores[0]?.score ?? 0) > 80) {
+        timeStatsRef.current[hour] += 1;
+      }
+
+      // 🔗 Learning: store sequence of best stores
+      if (nearbyStores[0]?.storeId) {
+        sequenceRef.current.push(nearbyStores[0].storeId);
+        sequenceRef.current = sequenceRef.current.slice(-10);
+      }
+
+      // 🧠 Prediction v4: combine signals
+      const best = nearbyStores[0];
+      const trendScore = trend > 5 ? 20 : 0;
+      const timeScore = (timeStatsRef.current[new Date().getHours()] || 0) > 3 ? 15 : 0;
+      const sequenceScore = sequenceRef.current.length > 2 ? 15 : 0;
+      const baseScore = best?.score ?? 0;
+
+      // 🔮 Prediction AI v5 (trend acceleration + velocity)
+      const velocity = historyRef.current.length > 2
+        ? historyRef.current[historyRef.current.length - 1] - historyRef.current[historyRef.current.length - 2]
+        : 0;
+
+      const acceleration = historyRef.current.length > 3
+        ? velocity - (historyRef.current[historyRef.current.length - 2] - historyRef.current[historyRef.current.length - 3])
+        : 0;
+
+      const velocityBoost = velocity > 5 ? 10 : velocity > 2 ? 5 : 0;
+      const accelerationBoost = acceleration > 3 ? 10 : acceleration > 1 ? 5 : 0;
+
+      const predictionScore = baseScore + trendScore + timeScore + sequenceScore + velocityBoost + accelerationBoost;
+
+      // 🔮 Prediction v6 (EARLY SIGNAL ENGINE)
+
+      // 1. Micro-Spike Detection
+      let spikeScore = 0;
+      if (historyRef.current.length > 5) {
+        const recent = historyRef.current.slice(-5);
+
+        let increases = 0;
+        for (let i = 1; i < recent.length; i++) {
+          if (recent[i] > recent[i - 1]) increases++;
+        }
+
+        if (increases >= 3) spikeScore = 15;
+      }
+
+      // 2. Store Heat (mehrere gute Stores gleichzeitig)
+      const hotStores = nearbyStores.filter((s: any) => s.score > 70).length;
+      const storeHeatScore =
+        hotStores >= 3 ? 20 :
+        hotStores === 2 ? 10 :
+        0;
+
+      // 3. Time Cluster Boost
+      const currentHour2 = new Date().getHours();
+      const hourHits2 = timeStatsRef.current[currentHour2] || 0;
+      const timeClusterScore =
+        hourHits2 > 5 ? 20 :
+        hourHits2 > 3 ? 10 :
+        0;
+
+      // 4. Combined Early Score
+      const earlyPredictionScore =
+        predictionScore +
+        spikeScore +
+        storeHeatScore +
+        timeClusterScore;
+
+      // 🧠 Smart Cooldown (dynamic)
+      const getCooldown = () => {
+        if (predictionScore > 120 || earlyPredictionScore > 140) return 3000; // ultra fast
+        if (predictionScore > 100 || earlyPredictionScore > 115) return 5000; // fast
+        if (predictionScore > 80) return 8000; // medium
+        return 12000; // slow
+      };
+
+      const cooldownMs = getCooldown();
+
+      // 🧠 Adaptive Auto-Buy Level
+      const autoBuyLevel =
+        predictionScore > 110 || earlyPredictionScore > 135
+          ? 'sniper'
+          : predictionScore > 90
+          ? 'aggressive'
+          : 'normal';
+
+      const maxTabs =
+        autoBuyLevel === 'sniper' ? 3 :
+        autoBuyLevel === 'aggressive' ? 2 :
+        1;
+
+      const delayRange =
+        autoBuyLevel === 'sniper' ? [200, 600] :
+        autoBuyLevel === 'aggressive' ? [500, 1200] :
+        [1000, 2500];
+
+      // 🔔 Pre-Alert (before drop)
+      if (
+        typeof window !== 'undefined' &&
+        'Notification' in window &&
+        Notification.permission === 'granted' &&
+        autoBuyAggressive &&
+        primarySku &&
+        best &&
+        (
+  predictionScore > 100 ||
+  earlyPredictionScore > 115
+) &&
+        document.visibilityState === 'visible'
+      ) {
+        const now = Date.now();
+
+        if (now - lastAutoBuyRef.current > cooldownMs) {
+          lastAutoBuyRef.current = now;
+
+          const targets = nearbyStores.slice(0, 2);
+
+          targets.forEach((store: any, index: number) => {
+            const link = buildAppleDeepLink(store.storeId, primarySku);
+            sessionPoolRef.current++;
+const finalLink = link + `&_s=${sessionPoolRef.current}`;
+
+            setTimeout(() => {
+              if (openTabsRef.current < maxTabs) {
+                openTabsRef.current += 1;
+
+                let newTab: Window | null = null;
+                // Tab reuse logic
+                if (tabPoolRef.current.length > 0) {
+                  newTab = tabPoolRef.current.pop() || null;
+                  if (newTab && !newTab.closed) {
+                    newTab.location.href = finalLink;
+                  } else {
+                    newTab = window.open(finalLink, '_blank');
+                  }
+                } else {
+                  newTab = window.open(finalLink, '_blank');
+                }
+                if (newTab) tabPoolRef.current.push(newTab);
+
+                setTimeout(() => {
+                  try {
+                    if (newTab) {
+                      newTab.focus();
+
+                      // Try to inject sniper into same-origin tab
+                      try {
+                        if (!isAppleLink(link)) {
+                          newTab.eval(`(${startCheckoutSniper.toString()})();`);
+                        }
+                      } catch {
+                        // fallback → run locally
+                        if (!isAppleLink(link)) {
+                          startCheckoutSniper();
+                        }
+                      }
+                    }
+                  } catch {}
+                }, 1200);
+
+                setTimeout(() => {
+                  openTabsRef.current = Math.max(0, openTabsRef.current - 1);
+                  // 🧹 Cleanup geschlossene Tabs
+                  tabPoolRef.current = tabPoolRef.current.filter(t => t && !t.closed);
+                }, 10000);
+              }
+            }, randomDelay(delayRange[0] + index * 200, delayRange[1] + index * 300));
+          });
+        }
+      }
+// 🎯 Pre-Drop Sniping (enter before stock is visible)
+if (
+  autoBuyAggressive &&
+  primarySku &&
+  best &&
+  best.status !== 'available' &&
+  (
+    predictionScore > 115 ||
+    earlyPredictionScore > 125
+  ) &&
+  document.visibilityState === 'visible'
+) {
+  const now2 = Date.now();
+  if (now2 - lastAutoBuyRef.current > cooldownMs) {
+    lastAutoBuyRef.current = now2;
+
+    const targets = nearbyStores.slice(0, 1); // nur bester Store
+
+    targets.forEach((store: any) => {
+      const link = buildAppleDeepLink(store.storeId, primarySku);
+      sessionPoolRef.current++;
+      const finalLink = link + `&_s=${sessionPoolRef.current}`;
+      setTimeout(() => {
+        if (openTabsRef.current < maxTabs) {
+          openTabsRef.current += 1;
+
+          let newTab: Window | null = null;
+          if (tabPoolRef.current.length > 0) {
+            newTab = tabPoolRef.current.pop() || null;
+            if (newTab && !newTab.closed) {
+              newTab.location.href = finalLink;
+            } else {
+              newTab = window.open(finalLink, '_blank');
+            }
+          } else {
+            newTab = window.open(finalLink, '_blank');
+          }
+          if (newTab) tabPoolRef.current.push(newTab);
+
+          setTimeout(() => {
+            try {
+              if (newTab) {
+                newTab.focus();
+
+                // Try to inject sniper into same-origin tab
+                try {
+                  if (!isAppleLink(link)) {
+                    newTab.eval(`(${startCheckoutSniper.toString()})();`);
+                  }
+                } catch {
+                  // fallback → run locally
+                  if (!isAppleLink(link)) {
+                    startCheckoutSniper();
+                  }
+                }
+              }
+            } catch {}
+          }, 1200);
+
+          setTimeout(() => {
+            openTabsRef.current = Math.max(0, openTabsRef.current - 1);
+            tabPoolRef.current = tabPoolRef.current.filter(t => t && !t.closed);
+          }, 10000);
+        }
+      }, randomDelay(delayRange[0], delayRange[1])); // schneller als normal
+    });
+  }
+}
+      if (!nearbyStores.length) {
+        console.log('⚠️ No nearby stores found for SKUs:', skus);
+      }
 
       const mockContext = {
         availability: {
           nearbyStores,
-          status: nearbyStores.length > 0 ? 'in_stock' : 'out_of_stock',
+          status:
+            nearbyStores.length === 0
+              ? 'out_of_stock'
+              : nearbyStores[0].distanceKm < 10
+              ? 'hot'
+              : 'limited',
         },
         pricing: {
           currentPrice: 1199,
@@ -217,17 +710,87 @@ export default function TestPage() {
       };
 
       const result = makeMasterDecision(mockContext);
+
+      // 🤖 Auto-Buy Vorbereitung (v1)
+      const shouldAutoBuy =
+        result?.action === 'buy_now' &&
+        (nearbyStores?.[0]?.distanceKm ?? 999) < 10 &&
+        (nearbyStores?.[0]?.quantity ?? 0) > 0;
+      if (shouldAutoBuy && primarySku && autoBuyAggressive && document.visibilityState === 'visible') {
+        const now = Date.now();
+        if (now - lastAutoBuyRef.current > cooldownMs) {
+          lastAutoBuyRef.current = now;
+
+          const targets = nearbyStores.slice(0, 2);
+
+          targets.forEach((store: any, index: number) => {
+            const link = buildAppleDeepLink(store.storeId, primarySku);
+            sessionPoolRef.current++;
+            const finalLink = link + `&_s=${sessionPoolRef.current}`;
+            setTimeout(() => {
+              if (openTabsRef.current < maxTabs) {
+                openTabsRef.current += 1;
+
+                let newTab: Window | null = null;
+                if (tabPoolRef.current.length > 0) {
+                  newTab = tabPoolRef.current.pop() || null;
+                  if (newTab && !newTab.closed) {
+                    newTab.location.href = finalLink;
+                  } else {
+                    newTab = window.open(finalLink, '_blank');
+                  }
+                } else {
+                  newTab = window.open(finalLink, '_blank');
+                }
+                if (newTab) tabPoolRef.current.push(newTab);
+
+                setTimeout(() => {
+                  try {
+                    if (newTab) {
+                      newTab.focus();
+
+                      // Try to inject sniper into same-origin tab
+                      try {
+                        if (!isAppleLink(link)) {
+                          newTab.eval(`(${startCheckoutSniper.toString()})();`);
+                        }
+                      } catch {
+                        // fallback → run locally
+                        if (!isAppleLink(link)) {
+                          startCheckoutSniper();
+                        }
+                      }
+                    }
+                  } catch {}
+                }, 1200);
+
+                setTimeout(() => {
+                  openTabsRef.current = Math.max(0, openTabsRef.current - 1);
+                  tabPoolRef.current = tabPoolRef.current.filter(t => t && !t.closed);
+                }, 10000);
+              }
+            }, randomDelay(delayRange[0] + index * 200, delayRange[1] + index * 300));
+          });
+        }
+      }
       setDecision(result);
       setContext(mockContext);
 
       // ⏱ last check timestamp
       lastCheckRef.current = Date.now();
 
-      // 📊 Verlauf (max 30 Punkte)
-      setHistory((prev) => {
-        const next = [...prev, result?.score ?? 0];
-        return next.slice(-30);
-      });
+      // 📊 Verlauf (Realtime + präzise)
+      const nextHistory = [...historyRef.current, result?.score ?? 0].slice(-30);
+      historyRef.current = nextHistory;
+      setHistory(nextHistory);
+
+      // 📈 Realtime Trend (präziser)
+      const newTrend =
+        nextHistory.length > 5
+          ? nextHistory[nextHistory.length - 1] - nextHistory[0]
+          : 0;
+
+      setTrend(newTrend);
 
       // 🔔 Smart Push (Anti-Spam + intelligente Events)
       if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -253,20 +816,28 @@ export default function TestPage() {
         const becameAvailable = lastStatusRef.current !== 'in_stock' && currentStatus === 'in_stock';
         const bigScoreJump = currentScore - (lastScoreRef.current ?? 0) > 10;
 
+        const best = nearbyStores?.[0];
+        const isHotDeal =
+          best?.distanceKm < 10 &&
+          best?.quantity >= 2 &&
+          currentScore > 85;
+
         if (
           Notification.permission === 'granted' &&
           now - lastPushRef.current > COOLDOWN &&
           (
             becameAvailable ||          // first availability
             newBestStore ||             // better store found
+            isHotDeal ||                // hot deal
             bigScoreJump                // strong signal change
           )
         ) {
           lastPushRef.current = now;
 
-          const best = nearbyStores[0];
           const n = new Notification('Jetzt verfügbar 🔥', {
-            body: `${best?.storeId ?? 'in deiner Nähe'} • ${Math.round(best?.distanceKm ?? 0)} km • ${best?.quantity ?? 0} Geräte`
+            body: best?.distanceKm < 10
+              ? `🔥 ${best.storeId} • nur ${Math.round(best.distanceKm)} km • ${best.quantity} verfügbar`
+              : `${best?.storeId ?? 'in deiner Nähe'} • ${Math.round(best?.distanceKm ?? 0)} km • ${best?.quantity ?? 0} verfügbar`
           });
 
           n.onclick = () => {
@@ -280,7 +851,14 @@ export default function TestPage() {
         lastStatusRef.current = currentStatus;
         lastBestStoreRef.current = currentBestStore;
       }
-
+// 💾 Persist AI learning
+if (typeof window !== 'undefined') {
+  localStorage.setItem('lavinia_ai_stats', JSON.stringify({
+  storeStats: storeStatsRef.current,
+  timeStats: timeStatsRef.current,
+  storePriority: storePriorityRef.current
+}));
+}
       // 💾 Save user preferences
       if (typeof window !== 'undefined') {
         localStorage.setItem('lavinia_user_prefs', JSON.stringify(userPrefs));
@@ -302,7 +880,7 @@ export default function TestPage() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, []);
+  }, [userPrefs, autoBuyAggressive]);
 
   if (!decision) return <div style={{
     padding: 16,
@@ -394,6 +972,16 @@ export default function TestPage() {
         </label>
 
         <label style={{ display: 'block', marginTop: 10 }}>
+  Auto-Buy aggressiv:
+  <input
+    type="checkbox"
+    checked={autoBuyAggressive}
+    onChange={(e) => setAutoBuyAggressive(e.target.checked)}
+    style={{ marginLeft: 10 }}
+  />
+</label>
+
+        <label style={{ display: 'block', marginTop: 10 }}>
           Modell:
           <select
             value={userPrefs.variant.model}
@@ -475,8 +1063,36 @@ export default function TestPage() {
               {decision.action === 'wait' && '⏳ WAIT'}
               {decision.action === 'monitor' && '👀 MONITOR'}
             </div>
+            {decision?.action === 'buy_now' && (
+              <div style={{ marginTop: 8, color: '#22c55e', fontSize: 12 }}>
+                🤖 Auto-Buy bereit (1-Klick)
+              </div>
+            )}
             <div style={{ color: '#888', fontSize: 12 }}>
               {decision.checkout?.store?.id ?? '—'} • {Math.round(context?.availability?.nearbyStores?.find((s:any)=>s.storeId===decision.checkout?.store?.id)?.distanceKm ?? 0)} km
+            </div>
+            <div style={{ color: '#888', fontSize: 12 }}>
+              {trend > 5 && '📈 Nachfrage steigt (Trend erkannt)'}
+              {trend > 10 && '🔥 Drop wahrscheinlich'}
+              {trend < -5 && '📉 Nachfrage sinkt'}
+            </div>
+            <div style={{ color: '#666', fontSize: 11 }}>
+              {timeStatsRef.current[new Date().getHours()] > 3 && '⏱️ Typische Drop-Zeit'}
+            </div>
+            <div style={{ color: '#555', fontSize: 11 }}>
+              {sequenceRef.current.length > 2 && '🔗 Muster erkannt'}
+            </div>
+            <div style={{ color: '#22c55e', fontSize: 11 }}>
+              {(() => {
+                // replicate predictionScore calculation
+                const best = context?.availability?.nearbyStores?.[0];
+                const trendScore = trend > 5 ? 20 : 0;
+                const timeScore = (timeStatsRef.current[new Date().getHours()] || 0) > 3 ? 15 : 0;
+                const sequenceScore = sequenceRef.current.length > 2 ? 15 : 0;
+                const baseScore = best?.score ?? 0;
+                const predictionScore = baseScore + trendScore + timeScore + sequenceScore;
+                return predictionScore > 100 ? '⚡ Drop imminent' : null;
+              })()}
             </div>
           </div>
           <div style={{ fontSize: 18, fontWeight: 'bold' }}>
@@ -547,7 +1163,49 @@ export default function TestPage() {
               ))}
 
               <button
-                onClick={() => alert(`🚀 Checkout gestartet für ${decision.checkout.store.id}`)}
+                onClick={() => {
+                  console.log('🚀 Manual Buy Triggered:', decision.checkout);
+                  const best = context?.availability?.nearbyStores?.[0];
+                  const primarySku = getSkusFromPrefs(userPrefs)?.[0];
+                  if (best && primarySku) {
+                    const link = buildAppleDeepLink(best.storeId, primarySku);
+                    sessionPoolRef.current++;
+const finalLink = link + `&_s=${sessionPoolRef.current}`;
+                    let newTab: Window | null = null;
+                    if (tabPoolRef.current.length > 0) {
+                      newTab = tabPoolRef.current.pop() || null;
+                      if (newTab && !newTab.closed) {
+                        newTab.location.href = finalLink;
+                      } else {
+                        newTab = window.open(finalLink, '_blank');
+                      }
+                    } else {
+                      newTab = window.open(finalLink, '_blank');
+                    }
+                    if (newTab) tabPoolRef.current.push(newTab);
+                    setTimeout(() => {
+                      try {
+                        if (newTab) {
+                          newTab.focus();
+
+                          // Try to inject sniper into same-origin tab
+                          try {
+                            if (!isAppleLink(link)) {
+                              newTab.eval(`(${startCheckoutSniper.toString()})();`);
+                            }
+                          } catch {
+                            // fallback → run locally
+                            if (!isAppleLink(link)) {
+                              startCheckoutSniper();
+                            }
+                          }
+                        }
+                      } catch {}
+                    }, 1200);
+                  } else {
+                    alert(`🚀 Checkout gestartet für ${decision.checkout.store.id}`);
+                  }
+                }}
                 style={{
                   padding: 16,
                   background: '#22c55e',
@@ -560,6 +1218,19 @@ export default function TestPage() {
               >
                 Jetzt kaufen
               </button>
+              {(() => {
+                const best = context?.availability?.nearbyStores?.[0];
+                const primarySku = getSkusFromPrefs(userPrefs)?.[0];
+                if (!best || !primarySku) return null;
+                const link = buildAppleDeepLink(best.storeId, primarySku);
+                sessionPoolRef.current++;
+const finalLink = link + `&_s=${sessionPoolRef.current}`;
+                return (
+                  <div style={{ marginTop: 8, fontSize: 11, color: '#888', wordBreak: 'break-all' }}>
+                    🔗 {link}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </>

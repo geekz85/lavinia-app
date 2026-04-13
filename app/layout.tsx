@@ -25,9 +25,9 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
     <html
       lang="en"
@@ -40,12 +40,6 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-title" content="Lavinia" />
 
         <link rel="apple-touch-icon" href="/icon.png" />
-
-        {/* Splash Screen */}
-        <link
-          rel="apple-touch-startup-image"
-          href="/icon.png"
-        />
       </head>
       <body className="min-h-full flex flex-col">
         <Splash />
