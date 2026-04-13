@@ -1,9 +1,8 @@
-import { runLaviniaEngine } from '@/lib/engine/lavinia';
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const result = await runLaviniaEngine({
-    test: true
+  return Response.json({
+    status: 'ok',
+    message: 'API is working'
   });
-
-  return Response.json(result);
 }
