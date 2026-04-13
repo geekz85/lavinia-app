@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // optional config
+  // ensure API routes work correctly on Vercel
+  output: "standalone",
 };
 
 export default nextConfig;
