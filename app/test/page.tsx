@@ -5,8 +5,42 @@ function randomDelay(min = 800, max = 2500) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+
 function isAppleLink(url: string) {
   return url.includes('apple.com');
+}
+
+// 🔧 Global fallback (fix for build – real ref is inside component)
+const storePriorityRef: { current: Record<string, number> } = { current: {} };
+
+// 🌐 Smart Domain Profiles v2
+function getDomainProfile(url: string) {
+  const domainStats = storePriorityRef.current || {};
+
+  if (url.includes('apple.com')) {
+    return { name: 'apple', sniper: false, aggressiveness: 'safe' };
+  }
+
+  if (url.includes('amazon')) {
+    const score = domainStats['amazon'] || 0;
+
+    let aggressiveness = 'medium';
+
+    if (score > 30) aggressiveness = 'aggressive';
+    else if (score < 5) aggressiveness = 'low';
+
+    return {
+      name: 'amazon',
+      sniper: true,
+      aggressiveness
+    };
+  }
+
+  if (url.includes('mediamarkt') || url.includes('saturn')) {
+    return { name: 'retail', sniper: true, aggressiveness: 'medium' };
+  }
+
+  return { name: 'default', sniper: true, aggressiveness: 'normal' };
 }
 
 // 🏹 Checkout Sniper Mode: Auto-clicks checkout/buy buttons in DOM (best effort)
@@ -93,15 +127,15 @@ function startCheckoutSniper() {
 
     // 🧠 Queue Breaker Logic
     if (state === 'queue') {
-      // smarter refresh pattern
-      if (attempts % 6 === 0) {
-        console.log('🔄 Soft refresh (queue)');
-        location.reload();
+      const delay = randomDelay(2000, 5000);
+
+      if (attempts % 5 === 0) {
+        console.log('🔄 Smart refresh (queue)');
+        setTimeout(() => location.reload(), delay);
       }
 
-      // occasionally wait longer (human-like)
-      if (attempts % 10 === 0) {
-        console.log('⏳ Pause wegen Queue');
+      if (attempts % 9 === 0) {
+        console.log('⏳ Human wait (queue)');
         return;
       }
     }
@@ -279,6 +313,21 @@ async function getSkusFromDB(prefs: any): Promise<string[]> {
 import { makeMasterDecision } from '@/lib/core/master-control';
 import { fetchAvailability } from '@/lib/data/fetch-availability';
 import { fetchAppleAvailability } from '@/lib/data/apple';
+
+// 🛒 Multi-Shop Availability Placeholder
+async function fetchMultiShopAvailability(skus: string[]) {
+  const results = await Promise.all([
+    fetchAppleAvailability({ zip: '50667', models: skus }),
+
+    // 🌍 Amazon EU (vorbereitet für echte APIs)
+    fetch('/api/amazon-de').catch(() => null),
+    fetch('/api/amazon-fr').catch(() => null),
+    fetch('/api/amazon-es').catch(() => null),
+    fetch('/api/amazon-it').catch(() => null),
+  ]);
+
+  return results;
+}
 import { registerPush } from '@/lib/push/register';
 
 export default function TestPage() {
@@ -290,6 +339,7 @@ export default function TestPage() {
   });
 
   const [appMode, setAppMode] = useState(true);
+  const [primarySkuState, setPrimarySkuState] = useState<string | null>(null);
   const [autoBuyAggressive, setAutoBuyAggressive] = useState(false);
 
   const lastPushRef = useRef<number>(0);
@@ -306,10 +356,37 @@ export default function TestPage() {
   const timeStatsRef = useRef<Record<number, number>>({});
   const sequenceRef = useRef<string[]>([]);
   const preAlertRef = useRef<number>(0);
+
   const lastAutoBuyRef = useRef<number>(0);
   const openTabsRef = useRef<number>(0);
   const tabPoolRef = useRef<Window[]>([]);
   const sessionPoolRef = useRef<number>(0);
+
+  // 🧠 Auto-Detection Engine (multi-shop ready)
+  const detectGlobalDrop = (stores: any[]) => {
+    let signals = 0;
+
+    stores.forEach((s: any) => {
+      if (s.quantity > 0) signals += 2;
+      if (s.score > 80) signals += 1;
+    });
+
+    return signals >= 3; // threshold
+  };
+
+  // 🐦 X Signal Detection (placeholder for real API later)
+  const detectXSignal = async () => {
+    try {
+      const res = await fetch('/api/x-signals');
+      const data = await res.json();
+
+      if (data?.level === 'strong') return 'strong';
+      if (data?.level === 'medium') return 'medium';
+      return 'none';
+    } catch {
+      return 'none';
+    }
+  };
 
 
   useEffect(() => {
@@ -338,11 +415,17 @@ if (storedStats) {
     const load = async () => {
       const userLocation = await getUserLocation();
       // 🌐 Build MULTIPLE SKUs from user preferences
-      const skus = await getSkusFromDB(userPrefs);
+      let skus = await getSkusFromDB(userPrefs);
+
+// fallback wenn DB leer
+if (!skus || skus.length === 0) {
+  console.log('⚠️ DB leer – fallback auf alte SKU_MAP');
+  skus = getSkusFromPrefs(userPrefs);
+}
 
       // 🎯 choose primary SKU for deep link
       const primarySku = skus?.[0] || null;
-
+setPrimarySkuState(primarySku);
       // 🌐 Fetch Apple live data with multiple SKUs
       const data = await fetchAppleAvailability({
         zip: '50667',
@@ -415,19 +498,37 @@ const priority = storePriorityRef.current[s.storeId || s.storeName] || 0;
 
       // 🧠 Learning: track store success
       nearbyStores.forEach((s: any) => {
-        if (!storeStatsRef.current[s.storeId]) {
-          storeStatsRef.current[s.storeId] = { hits: 0, success: 0 };
+        const key = s.storeId || s.storeName;
+        if (!storeStatsRef.current[key]) {
+          storeStatsRef.current[key] = { hits: 0, success: 0 };
         }
 
         if (s.status === 'available') {
-          storeStatsRef.current[s.storeId].hits += 1;
+          storeStatsRef.current[key].hits += 1;
 
           if (s.distanceKm < 15 && s.quantity > 0) {
-            storeStatsRef.current[s.storeId].success += 1;
+            storeStatsRef.current[key].success += 1;
           }
         }
       });
 // 🧠 Update Store Priority (Top Stores lernen)
+// 🧠 Domain Learning (Amazon)
+nearbyStores.forEach((s: any) => {
+  if (s.storeId?.toLowerCase().includes('amazon')) {
+    if (!storePriorityRef.current['amazon']) {
+      storePriorityRef.current['amazon'] = 0;
+    }
+
+    if (s.quantity > 0) {
+      storePriorityRef.current['amazon'] += 2;
+    } else {
+      storePriorityRef.current['amazon'] -= 1;
+    }
+
+    // Begrenzen
+    storePriorityRef.current['amazon'] = Math.max(0, Math.min(50, storePriorityRef.current['amazon']));
+  }
+});
 nearbyStores.slice(0, 3).forEach((s: any, index: number) => {
   const key = s.storeId || s.storeName;
 
@@ -520,9 +621,36 @@ nearbyStores.slice(0, 3).forEach((s: any, index: number) => {
 
       const cooldownMs = getCooldown();
 
-      // 🧠 Adaptive Auto-Buy Level
+      // 🌍 Global Drop Detection Trigger
+      const xSignal = await detectXSignal();
+      const globalDropDetected = detectGlobalDrop(nearbyStores);
+
+      const ultraDropDetected =
+        globalDropDetected ||
+        xSignal === 'strong' ||
+        (xSignal === 'medium' && (nearbyStores[0]?.score ?? 0) > 80);
+
+      if (globalDropDetected) {
+        console.log('🌍 Global Drop erkannt → Multi-Sniper aktiviert');
+      }
+
+      // 🔮 Pre-Early Signal (ultra früh)
+      const microTrend =
+        historyRef.current.length > 3
+          ? historyRef.current[historyRef.current.length - 1] >
+            historyRef.current[historyRef.current.length - 3]
+          : false;
+
+      const ultraEarlyScore =
+        earlyPredictionScore +
+        (microTrend ? 10 : 0) +
+        (nearbyStores.length > 2 ? 10 : 0);
+
+      // 🧠 Adaptive Auto-Buy Level (v2)
       const autoBuyLevel =
-        predictionScore > 110 || earlyPredictionScore > 135
+        ultraDropDetected || ultraEarlyScore > 140
+          ? 'sniper'
+          : predictionScore > 110 || earlyPredictionScore > 135
           ? 'sniper'
           : predictionScore > 90
           ? 'aggressive'
@@ -589,12 +717,14 @@ const finalLink = link + `&_s=${sessionPoolRef.current}`;
 
                       // Try to inject sniper into same-origin tab
                       try {
-                        if (!isAppleLink(link)) {
+                        const profile = getDomainProfile(link);
+                        if (profile.sniper) {
                           newTab.eval(`(${startCheckoutSniper.toString()})();`);
                         }
                       } catch {
                         // fallback → run locally
-                        if (!isAppleLink(link)) {
+                        const profile2 = getDomainProfile(link);
+                        if (profile2.sniper) {
                           startCheckoutSniper();
                         }
                       }
@@ -658,12 +788,14 @@ if (
 
                 // Try to inject sniper into same-origin tab
                 try {
-                  if (!isAppleLink(link)) {
+                  const profile = getDomainProfile(link);
+                  if (profile.sniper) {
                     newTab.eval(`(${startCheckoutSniper.toString()})();`);
                   }
                 } catch {
                   // fallback → run locally
-                  if (!isAppleLink(link)) {
+                  const profile2 = getDomainProfile(link);
+                  if (profile2.sniper) {
                     startCheckoutSniper();
                   }
                 }
@@ -751,12 +883,14 @@ if (
 
                       // Try to inject sniper into same-origin tab
                       try {
-                        if (!isAppleLink(link)) {
+                        const profile = getDomainProfile(link);
+                        if (profile.sniper) {
                           newTab.eval(`(${startCheckoutSniper.toString()})();`);
                         }
                       } catch {
                         // fallback → run locally
-                        if (!isAppleLink(link)) {
+                        const profile2 = getDomainProfile(link);
+                        if (profile2.sniper) {
                           startCheckoutSniper();
                         }
                       }
@@ -808,9 +942,10 @@ if (
         let stockIncreased = false;
         const stores = mockContext?.availability?.nearbyStores ?? [];
         stores.forEach((s: any) => {
-          const prev = lastStockRef.current[s.storeId] ?? 0;
+          const key = s.storeId || s.storeName;
+          const prev = lastStockRef.current[key] ?? 0;
           if ((s.quantity ?? 0) > prev) stockIncreased = true;
-          lastStockRef.current[s.storeId] = s.quantity ?? 0;
+          lastStockRef.current[key] = s.quantity ?? 0;
         });
 
         const becameAvailable = lastStatusRef.current !== 'in_stock' && currentStatus === 'in_stock';
@@ -1163,24 +1298,22 @@ if (typeof window !== 'undefined') {
               ))}
 
               <button
-                onClick={() => {
+                onClick={async () => {
                   console.log('🚀 Manual Buy Triggered:', decision.checkout);
                   const best = context?.availability?.nearbyStores?.[0];
-                  const primarySku = getSkusFromPrefs(userPrefs)?.[0];
+                  const primarySku = primarySkuState;
                   if (best && primarySku) {
                     const link = buildAppleDeepLink(best.storeId, primarySku);
-                    sessionPoolRef.current++;
-const finalLink = link + `&_s=${sessionPoolRef.current}`;
                     let newTab: Window | null = null;
                     if (tabPoolRef.current.length > 0) {
                       newTab = tabPoolRef.current.pop() || null;
                       if (newTab && !newTab.closed) {
-                        newTab.location.href = finalLink;
+                        newTab.location.href = link;
                       } else {
-                        newTab = window.open(finalLink, '_blank');
+                        newTab = window.open(link, '_blank');
                       }
                     } else {
-                      newTab = window.open(finalLink, '_blank');
+                      newTab = window.open(link, '_blank');
                     }
                     if (newTab) tabPoolRef.current.push(newTab);
                     setTimeout(() => {
@@ -1190,12 +1323,14 @@ const finalLink = link + `&_s=${sessionPoolRef.current}`;
 
                           // Try to inject sniper into same-origin tab
                           try {
-                            if (!isAppleLink(link)) {
+                            const profile = getDomainProfile(link);
+                            if (profile.sniper) {
                               newTab.eval(`(${startCheckoutSniper.toString()})();`);
                             }
                           } catch {
                             // fallback → run locally
-                            if (!isAppleLink(link)) {
+                            const profile2 = getDomainProfile(link);
+                            if (profile2.sniper) {
                               startCheckoutSniper();
                             }
                           }
@@ -1220,11 +1355,9 @@ const finalLink = link + `&_s=${sessionPoolRef.current}`;
               </button>
               {(() => {
                 const best = context?.availability?.nearbyStores?.[0];
-                const primarySku = getSkusFromPrefs(userPrefs)?.[0];
+                const primarySku = primarySkuState;
                 if (!best || !primarySku) return null;
                 const link = buildAppleDeepLink(best.storeId, primarySku);
-                sessionPoolRef.current++;
-const finalLink = link + `&_s=${sessionPoolRef.current}`;
                 return (
                   <div style={{ marginTop: 8, fontSize: 11, color: '#888', wordBreak: 'break-all' }}>
                     🔗 {link}
